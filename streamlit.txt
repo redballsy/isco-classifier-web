@@ -1,0 +1,5 @@
+streamlit
+torch
+fasttext-wheel
+pandas
+openpyxl

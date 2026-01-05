@@ -1,0 +1,24 @@
+# --- MODÈLES LOURDS (À NE PAS ENVOYER) ---
+# Ces fichiers dépassent la limite de GitHub (100 Mo)
+*.bin
+modelsfastext/
+
+# --- FICHIERS DE SAUVEGARDE MODÈLE ---
+# Optionnel : si votre fichier .pth est très lourd (>100Mo), décommentez la ligne suivante
+# *.pth
+
+# --- DONNÉES ET CACHE ---
+__pycache__/
+.streamlit/
+.DS_Store
+
+# --- ENVIRONNEMENTS VIRTUELS ---
+# Ne jamais envoyer l'environnement entier, les autres utiliseront requirements.txt
+venv/
+.venv/
+env/
+ENV/
+
+# --- FICHIERS DE LOGS ET TEMPORAIRES ---
+*.log
+*.tmp
