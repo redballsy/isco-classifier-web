@@ -8,23 +8,25 @@ import urllib.request
 from difflib import get_close_matches
 
 # ============================================
-# 1. CONFIGURATION DES CHEMINS (RELATIFS)
+# 1. CONFIGURATION DES CHEMINS (AUTO-ADAPTATIFS)
 # ============================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Chemins des modèles
+# Dossier unique pour tes modèles
 MODEL_DIR = os.path.join(BASE_DIR, "modelsfastext")
-# Utilisation du modèle compressé .ftz pour éviter le plantage mémoire
-# CHANGER .bin PAR .ftz ICI :
-FASTTEXT_PATH = os.path.join(MODEL_DIR, "cc.fr.300.ftz")
-MODEL_PATH = os.path.join(BASE_DIR, "modelsfastext", "citp_classifier_model.pth")
 
-# Chemins des données (Utilisation de BASE_DIR pour que ça marche partout)
+# 1. Le modèle de langue (Sera téléchargé automatiquement s'il manque)
+FASTTEXT_PATH = os.path.join(MODEL_DIR, "cc.fr.300.ftz")
+
+# 2. Ton classifieur entraîné (Doit être présent sur GitHub)
+MODEL_PATH = os.path.join(MODEL_DIR, "citp_classifier_model.pth")
+
+# Chemins des données Excel
 ISCO_REF_PATH = os.path.join(BASE_DIR, "data", "CITP_08.xlsx")
 TRAIN_DATA_PATH = os.path.join(BASE_DIR, "data", "entrainer2_propre.xlsx")
 
 # ============================================
-# 2. FONCTIONS DE CHARGEMENT ET AUTO-DOWNLOAD
+# 2. ARCHITECTURE ET CHARGEMENT
 # ============================================
 class CITPClassifier(nn.Module):
     def __init__(self, input_dim, num_classes):
@@ -36,26 +38,30 @@ class CITPClassifier(nn.Module):
     def forward(self, x): return self.network(x)
 
 def download_fasttext():
-    """Télécharge le modèle FastText compressé s'il est absent (pour GitHub/Cloud)"""
+    """Télécharge le modèle FastText compressé s'il est absent du serveur"""
     if not os.path.exists(FASTTEXT_PATH):
         if not os.path.exists(MODEL_DIR):
             os.makedirs(MODEL_DIR)
         
         url = "https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.fr.300.ftz"
-        with st.spinner("Téléchargement du modèle linguistique (environ 400Mo)..."):
+        with st.spinner("Initialisation du moteur de langue (environ 400Mo)..."):
             urllib.request.urlretrieve(url, FASTTEXT_PATH)
-        st.success("Modèle téléchargé !")
+        st.success("Moteur de langue prêt !")
 
 @st.cache_resource
 def load_ai_models():
-    # S'assurer que FastText est là
+    # 1. Télécharger si nécessaire
     download_fasttext()
     
     try:
-        # Charger FastText (version légère .ftz)
+        # 2. Charger le moteur FastText
         ft = fasttext.load_model(FASTTEXT_PATH)
         
-        # Charger PyTorch sur CPU (vital pour le Cloud)
+        # 3. Charger ton classifieur sur CPU
+        if not os.path.exists(MODEL_PATH):
+            st.error(f"Fichier manquant : {MODEL_PATH}")
+            return None, None, None
+            
         checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
         model = CITPClassifier(300, checkpoint['num_classes'])
         model.load_state_dict(checkpoint['model_state_dict'])
@@ -63,7 +69,7 @@ def load_ai_models():
         
         return ft, model, checkpoint['label_encoder']
     except Exception as e:
-        st.error(f"Erreur de chargement des modèles : {e}")
+        st.error(f"Erreur lors du chargement : {e}")
         return None, None, None
 
 @st.cache_data
@@ -77,7 +83,7 @@ def load_data():
         
         return mapping_officiel, list_train
     except Exception as e:
-        st.error(f"Erreur de chargement des fichiers Excel : {e}")
+        st.error(f"Erreur fichiers Excel : {e}")
         return {}, []
 
 # ============================================
@@ -88,11 +94,11 @@ st.set_page_config(page_title="ISCO Expert System", page_icon="💼", layout="wi
 st.title("💼 Système Expert de Classification ISCO-08")
 st.markdown("---")
 
-# Initialisation
+# Chargement des ressources
 ft_model, classifier, le = load_ai_models()
 isco_mapping, training_jobs = load_data()
 
-if isco_mapping:
+if isco_mapping and ft_model:
     official_jobs = sorted([str(k) for k in isco_mapping.keys()])
 
     col1, col2 = st.columns(2)
@@ -100,28 +106,27 @@ if isco_mapping:
     with col1:
         st.subheader("📖 Référentiel Officiel")
         selected_job = st.selectbox(
-            "Sélectionnez un métier officiel (recherche exacte) :",
+            "Rechercher un métier officiel :",
             options=[""] + official_jobs,
-            format_func=lambda x: "Rechercher un métier..." if x == "" else x
+            format_func=lambda x: "Choisir dans la liste..." if x == "" else x
         )
 
     with col2:
         st.subheader("🤖 Intelligence Artificielle")
         free_text = st.text_input(
-            "Ou saisissez un libellé libre (prédiction) :",
-            placeholder="Ex: Spécialiste cloud computing..."
+            "Saisissez un libellé libre :",
+            placeholder="Ex: Expert en cybersécurité..."
         )
 
-    # --- LOGIQUE DE TRAITEMENT ---
+    # --- LOGIQUE ---
     result_code = None
     source = ""
     confidence = 100.0
 
     if selected_job:
         result_code = isco_mapping[selected_job]
-        source = "Source : Base de données officielle CITP-08"
-    elif free_text and ft_model:
-        # Prédiction
+        source = "Source : Référentiel CITP-08"
+    elif free_text:
         with torch.no_grad():
             vector = torch.FloatTensor(ft_model.get_sentence_vector(free_text.lower())).unsqueeze(0)
             output = classifier(vector)
@@ -132,18 +137,16 @@ if isco_mapping:
             confidence = conf.item() * 100
             source = f"Source : Prédiction IA (Confiance {confidence:.2f}%)"
         
-        # Suggestion
         suggestions = get_close_matches(free_text, official_jobs, n=1, cutoff=0.6)
         if suggestions:
-            st.info(f"💡 Le métier officiel le plus proche est : **{suggestions[0]}**")
+            st.info(f"💡 Métier officiel suggéré : **{suggestions[0]}**")
 
-    # --- AFFICHAGE ---
+    # --- AFFICHAGE DU RÉSULTAT ---
     if result_code:
         st.markdown("---")
-        st.metric("Code ISCO prédit / trouvé", result_code)
+        st.metric("Code ISCO identifié", result_code)
         st.caption(source)
-        
         if not selected_job and confidence < 50:
-            st.warning("⚠️ L'IA a un doute sur cette saisie. Vérifiez la correspondance.")
+            st.warning("⚠️ Attention : Confiance faible. Vérifiez manuellement.")
 else:
-    st.error("Impossible d'afficher l'interface : Fichiers de données manquants.")
+    st.info("Initialisation de l'application en cours...")
