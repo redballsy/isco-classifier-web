@@ -1,114 +1,81 @@
 import streamlit as st
-import torch
-import fasttext
-import os
 import pandas as pd
+import fasttext
+import torch
 import torch.nn as nn
-from difflib import get_close_matches
+import os
+import gc
 
-# ============================================
-# 1. CONFIGURATION DES CHEMINS (UNIVERSELS)
-# ============================================
+# Configuration de la page
+st.set_page_config(page_title="Classifieur ISCO", layout="centered")
+
+# Chemins des fichiers
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# On regroupe tout dans le dossier modelsfastext pour plus de simplicité
 MODEL_DIR = os.path.join(BASE_DIR, "modelsfastext")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
-# À la ligne 18 environ
 FASTTEXT_PATH = os.path.join(MODEL_DIR, "cc.fr.300.ftz")
+PYTORCH_PATH = os.path.join(MODEL_DIR, "fasttext_citp_v1.pt")
+EXCEL_PATH = os.path.join(DATA_DIR, "CITP_08.xlsx")
 
-# TON modèle classifieur (on utilise le nom exact de ton fichier)
-MODEL_PATH = os.path.join(MODEL_DIR, "fasttext_citp_v1.pt")
-
-# Chemins des données (Relatifs pour GitHub)
-ISCO_REF_PATH = os.path.join(BASE_DIR, "data", "CITP_08.xlsx")
-TRAIN_DATA_PATH = os.path.join(BASE_DIR, "data", "entrainer2_propre.xlsx")
-
-# ============================================
-# 2. ARCHITECTURE ET CHARGEMENT
-# ============================================
-class CITPClassifier(nn.Module):
-    def __init__(self, input_dim, num_classes):
-        super(CITPClassifier, self).__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, 512), nn.BatchNorm1d(512), nn.ReLU(),
-            nn.Dropout(0.3), nn.Linear(512, 256), nn.ReLU(), nn.Linear(256, num_classes)
-        )
-    def forward(self, x): return self.network(x)
-
+# --- CHARGEMENT DES MODÈLES AVEC MISE EN CACHE ---
 @st.cache_resource
-def load_ai_models():
-    if not os.path.exists(FASTTEXT_PATH):
-        st.error(f"Fichier manquant : {FASTTEXT_PATH}")
-        return None, None, None
-        
-    # Charger FastText
-    ft = fasttext.load_model(FASTTEXT_PATH)
+def load_all_resources():
+    st.write("⏳ Chargement des modèles en cours...")
     
-    # Charger PyTorch (on force le CPU pour le Cloud)
-    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-    model = CITPClassifier(300, checkpoint['num_classes'])
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
+    # 1. Chargement FastText
+    ft_model = fasttext.load_model(FASTTEXT_PATH)
     
-    return ft, model, checkpoint['label_encoder']
+    # 2. Chargement PyTorch (Mode CPU obligatoire pour Streamlit Cloud)
+    # Note : On suppose que ton modèle est une instance de nn.Module sauvegardée
+    pt_model = torch.load(PYTORCH_PATH, map_location=torch.device('cpu'))
+    pt_model.eval()
+    
+    # 3. Chargement Excel
+    df_ref = pd.read_excel(EXCEL_PATH)
+    
+    # Nettoyage mémoire
+    gc.collect()
+    
+    return ft_model, pt_model, df_ref
 
-@st.cache_data
-def load_data():
-    try:
-        df_ref = pd.read_excel(ISCO_REF_PATH)
-        mapping_officiel = pd.Series(df_ref.code.values, index=df_ref.nomenclature).to_dict()
-        
-        df_train = pd.read_excel(TRAIN_DATA_PATH)
-        list_train = df_train['nomenclature'].unique().tolist()
-        
-        return mapping_officiel, list_train
-    except Exception as e:
-        st.error(f"Erreur Excel : {e}")
-        return {}, []
+# Initialisation
+try:
+    ft_model, pt_model, df_ref = load_all_resources()
+    st.success("✅ Modèles et référentiel chargés !")
+except Exception as e:
+    st.error(f"❌ Erreur lors du chargement : {e}")
+    st.stop()
 
-# ============================================
-# 3. INTERFACE UTILISATEUR
-# ============================================
-st.set_page_config(page_title="ISCO Expert System", page_icon="💼", layout="wide")
-st.title("💼 Système Expert de Classification ISCO-08")
+# --- INTERFACE UTILISATEUR ---
+st.title("Search ISCO Classifier")
+st.subheader("Classification automatique des métiers (CITP-08)")
 
-# Chargement sécurisé
-ft_model, classifier, le = load_ai_models()
-isco_mapping, training_jobs = load_data()
+job_description = st.text_input("Entrez l'intitulé du métier :", placeholder="Ex: Développeur logiciel")
 
-if isco_mapping and ft_model:
-    official_jobs = sorted([str(k) for k in isco_mapping.keys()])
-    col1, col2 = st.columns(2)
+if job_description:
+    # 1. Prétraitement / Embedding avec FastText
+    # On récupère le vecteur de la phrase (sentence vector)
+    sentence_vector = ft_model.get_sentence_vector(job_description)
+    input_tensor = torch.tensor(sentence_vector).unsqueeze(0) # Ajout dimension batch
 
-    with col1:
-        st.subheader("📖 Référentiel Officiel")
-        selected_job = st.selectbox("Métier officiel :", options=[""] + official_jobs)
+    # 2. Prédiction avec PyTorch
+    with torch.no_grad():
+        output = pt_model(input_tensor)
+        # On récupère l'index de la classe avec la plus haute probabilité
+        _, predicted_idx = torch.max(output, 1)
+        prediction = predicted_idx.item()
 
-    with col2:
-        st.subheader("🤖 Intelligence Artificielle")
-        free_text = st.text_input("Libellé libre :", placeholder="Ex: Développeur fullstack...")
+    # 3. Correspondance avec le fichier Excel
+    # On suppose que ton modèle prédit un code qui correspond à une colonne 'Code' dans l'Excel
+    resultat = df_ref[df_ref['Code'] == prediction]
 
-    result_code = None
-    source = ""
+    if not resultat.empty:
+        st.write("### Résultat de la classification :")
+        st.table(resultat)
+    else:
+        st.warning(f"Code prédit : {prediction}, mais aucune correspondance trouvée dans l'Excel.")
 
-    if selected_job:
-        result_code = isco_mapping[selected_job]
-        source = "Source : Base officielle CITP-08"
-    elif free_text:
-        with torch.no_grad():
-            vector = torch.FloatTensor(ft_model.get_sentence_vector(free_text.lower())).unsqueeze(0)
-            output = classifier(vector)
-            probs = torch.softmax(output, dim=1)
-            conf, idx = torch.max(probs, 1)
-            result_code = le.inverse_transform([idx.item()])[0]
-            source = f"Source : IA (Confiance {conf.item()*100:.2f}%)"
-        
-        suggestions = get_close_matches(free_text, official_jobs, n=1, cutoff=0.6)
-        if suggestions:
-            st.info(f"💡 Suggestion : **{suggestions[0]}**")
-
-    if result_code:
-        st.markdown("---")
-        st.metric("Code ISCO", result_code)
-        st.caption(source)
+# Pied de page
+st.markdown("---")
+st.caption("Application propulsée par FastText, PyTorch et Streamlit")
