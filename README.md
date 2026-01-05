@@ -13,3 +13,5 @@ Une application Web d'intelligence artificielle pour classifier les métiers sel
 3. Installez les dépendances :
    ```bash
    pip install -r requirements.txt
+##   How to Run?
+He user needs to download cc.fr.300.ftz and place it in the modelsfastext/ folder.
