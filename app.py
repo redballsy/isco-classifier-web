@@ -17,8 +17,7 @@ MODEL_DIR = os.path.join(BASE_DIR, "modelsfastext")
 # Utilisation du modèle compressé .ftz pour éviter le plantage mémoire
 # CHANGER .bin PAR .ftz ICI :
 FASTTEXT_PATH = os.path.join(MODEL_DIR, "cc.fr.300.ftz")
-FASTTEXT_PATH = os.path.join(MODEL_DIR, "cc.fr.300.ftz")
-MODEL_PATH = os.path.join(BASE_DIR, "models", "citp_classifier_model.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "modelsfastext", "citp_classifier_model.pth")
 
 # Chemins des données (Utilisation de BASE_DIR pour que ça marche partout)
 ISCO_REF_PATH = os.path.join(BASE_DIR, "data", "CITP_08.xlsx")
