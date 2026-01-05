@@ -2,71 +2,80 @@ import streamlit as st
 import pandas as pd
 import fasttext
 import torch
+import torch.nn as nn
 import os
 import gc
 
-st.set_page_config(page_title="ISCO Classifier", layout="wide")
+# Configuration de la page
+st.set_page_config(page_title="Classifieur ISCO", layout="centered")
 
-# Chemins
+# Chemins des fichiers
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FASTTEXT_PATH = os.path.join(BASE_DIR, "modelsfastext", "cc.fr.300.ftz")
-PYTORCH_PATH = os.path.join(BASE_DIR, "modelsfastext", "fasttext_citp_v1.pt")
-EXCEL_PATH = os.path.join(BASE_DIR, "data", "CITP_08.xlsx")
+MODEL_DIR = os.path.join(BASE_DIR, "modelsfastext")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
-# Utilisation de @st.cache_resource avec une limite pour éviter les fuites
-@st.cache_resource(show_spinner="Chargement du cerveau de l'IA...")
-def load_models():
-    # On ne charge FastText que si nécessaire
-    ft = fasttext.load_model(FASTTEXT_PATH)
-    # Chargement léger du modèle PT
-    pt = torch.load(PYTORCH_PATH, map_location="cpu")
-    pt.eval()
+FASTTEXT_PATH = os.path.join(MODEL_DIR, "cc.fr.300.ftz")
+PYTORCH_PATH = os.path.join(MODEL_DIR, "fasttext_citp_v1.pt")
+EXCEL_PATH = os.path.join(DATA_DIR, "CITP_08.xlsx")
+
+# --- CHARGEMENT DES MODÈLES AVEC MISE EN CACHE ---
+@st.cache_resource
+def load_all_resources():
+    st.write("⏳ Chargement des modèles en cours...")
+    
+    # 1. Chargement FastText
+    ft_model = fasttext.load_model(FASTTEXT_PATH)
+    
+    # 2. Chargement PyTorch (Mode CPU obligatoire pour Streamlit Cloud)
+    # Note : On suppose que ton modèle est une instance de nn.Module sauvegardée
+    pt_model = torch.load(PYTORCH_PATH, map_location=torch.device('cpu'))
+    pt_model.eval()
+    
+    # 3. Chargement Excel
+    df_ref = pd.read_excel(EXCEL_PATH)
+    
+    # Nettoyage mémoire
     gc.collect()
-    return ft, pt
+    
+    return ft_model, pt_model, df_ref
 
-@st.cache_data
-def load_data():
-    return pd.read_excel(EXCEL_PATH)
+# Initialisation
+try:
+    ft_model, pt_model, df_ref = load_all_resources()
+    st.success("✅ Modèles et référentiel chargés !")
+except Exception as e:
+    st.error(f"❌ Erreur lors du chargement : {e}")
+    st.stop()
 
-st.title("🔍 Classifieur de métiers ISCO")
-st.write("Entrez un métier pour trouver son code CITP-08.")
+# --- INTERFACE UTILISATEUR ---
+st.title("Search ISCO Classifier")
+st.subheader("Classification automatique des métiers (CITP-08)")
 
-# L'ASTUCE : On ne charge rien tant que l'utilisateur n'a pas interagi
-if 'ready' not in st.session_state:
-    st.session_state.ready = False
+job_description = st.text_input("Entrez l'intitulé du métier :", placeholder="Ex: Développeur logiciel")
 
-if not st.session_state.ready:
-    if st.button("🚀 Démarrer l'application"):
-        st.session_state.ready = True
-        st.rerun()
-else:
-    try:
-        ft_model, pt_model = load_models()
-        df_ref = load_data()
-        
-        job_query = st.text_input("Intitulé du poste :", "")
+if job_description:
+    # 1. Prétraitement / Embedding avec FastText
+    # On récupère le vecteur de la phrase (sentence vector)
+    sentence_vector = ft_model.get_sentence_vector(job_description)
+    input_tensor = torch.tensor(sentence_vector).unsqueeze(0) # Ajout dimension batch
 
-        if job_query:
-            # Prédiction
-            vec = ft_model.get_sentence_vector(job_query)
-            tensor = torch.tensor(vec).unsqueeze(0)
-            
-            with torch.no_grad():
-                output = pt_model(tensor)
-                prediction = torch.max(output, 1)[1].item()
-            
-            # Affichage
-            # Vérifie bien que la colonne s'appelle 'Code' dans ton Excel
-            res = df_ref[df_ref['Code'] == prediction]
-            
-            if not res.empty:
-                st.success(f"Résultat trouvé pour le code : {prediction}")
-                st.dataframe(res, use_container_width=True)
-            else:
-                st.warning(f"Code {prediction} prédit, mais non trouvé dans le fichier Excel.")
-                
-    except Exception as e:
-        st.error(f"Erreur technique : {e}")
-        if st.button("Réinitialiser"):
-            st.cache_resource.clear()
-            st.rerun()
+    # 2. Prédiction avec PyTorch
+    with torch.no_grad():
+        output = pt_model(input_tensor)
+        # On récupère l'index de la classe avec la plus haute probabilité
+        _, predicted_idx = torch.max(output, 1)
+        prediction = predicted_idx.item()
+
+    # 3. Correspondance avec le fichier Excel
+    # On suppose que ton modèle prédit un code qui correspond à une colonne 'Code' dans l'Excel
+    resultat = df_ref[df_ref['Code'] == prediction]
+
+    if not resultat.empty:
+        st.write("### Résultat de la classification :")
+        st.table(resultat)
+    else:
+        st.warning(f"Code prédit : {prediction}, mais aucune correspondance trouvée dans l'Excel.")
+
+# Pied de page
+st.markdown("---")
+st.caption("Application propulsée par FastText, PyTorch et Streamlit")
