@@ -4,22 +4,23 @@ import fasttext
 import os
 import pandas as pd
 import torch.nn as nn
-import urllib.request
 from difflib import get_close_matches
 
 # ============================================
-# 1. CONFIGURATION DES CHEMINS
+# 1. CONFIGURATION DES CHEMINS (UNIVERSELS)
 # ============================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# On regroupe tout dans le dossier modelsfastext pour plus de simplicité
 MODEL_DIR = os.path.join(BASE_DIR, "modelsfastext")
 
-# Moteur de langue (Téléchargement auto)
+# À la ligne 18 environ
 FASTTEXT_PATH = os.path.join(MODEL_DIR, "cc.fr.300.ftz")
 
-# Ton classifieur (Doit être dans modelsfastext sur GitHub)
-MODEL_PATH = os.path.join(MODEL_DIR, "citp_classifier_model.pth")
+# TON modèle classifieur (on utilise le nom exact de ton fichier)
+MODEL_PATH = os.path.join(MODEL_DIR, "fasttext_citp_v1.pt")
 
-# Données Excel
+# Chemins des données (Relatifs pour GitHub)
 ISCO_REF_PATH = os.path.join(BASE_DIR, "data", "CITP_08.xlsx")
 TRAIN_DATA_PATH = os.path.join(BASE_DIR, "data", "entrainer2_propre.xlsx")
 
@@ -35,52 +36,22 @@ class CITPClassifier(nn.Module):
         )
     def forward(self, x): return self.network(x)
 
-def download_fasttext():
-    """Télécharge le modèle avec une identité factice pour éviter les erreurs HTTP"""
-    if not os.path.exists(FASTTEXT_PATH):
-        if not os.path.exists(MODEL_DIR):
-            os.makedirs(MODEL_DIR)
-        
-        url = "https://dl.fbaipublicfiles.com/fasttext/vectors-crawl/cc.fr.300.ftz"
-        
-        try:
-            with st.spinner("Téléchargement du moteur de langue (400 Mo)... Veuillez patienter."):
-                # Cette partie simule un navigateur pour éviter le rejet du serveur (HTTPError)
-                req = urllib.request.Request(
-                    url, 
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                )
-                with urllib.request.urlopen(req) as response, open(FASTTEXT_PATH, 'wb') as out_file:
-                    out_file.write(response.read())
-            st.success("Moteur de langue téléchargé avec succès !")
-        except Exception as e:
-            st.error(f"Erreur de téléchargement : {e}")
-            st.info("Le serveur distant a refusé la connexion. Retentez dans quelques instants.")
-
 @st.cache_resource
 def load_ai_models():
-    download_fasttext()
-    
     if not os.path.exists(FASTTEXT_PATH):
+        st.error(f"Fichier manquant : {FASTTEXT_PATH}")
         return None, None, None
-
-    try:
-        # Charger FastText
-        ft = fasttext.load_model(FASTTEXT_PATH)
         
-        # Charger le classifieur
-        if os.path.exists(MODEL_PATH):
-            checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-            model = CITPClassifier(300, checkpoint['num_classes'])
-            model.load_state_dict(checkpoint['model_state_dict'])
-            model.eval()
-            return ft, model, checkpoint['label_encoder']
-        else:
-            st.error(f"Fichier introuvable : {MODEL_PATH}")
-            return ft, None, None
-    except Exception as e:
-        st.error(f"Erreur au chargement des modèles : {e}")
-        return None, None, None
+    # Charger FastText
+    ft = fasttext.load_model(FASTTEXT_PATH)
+    
+    # Charger PyTorch (on force le CPU pour le Cloud)
+    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
+    model = CITPClassifier(300, checkpoint['num_classes'])
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    
+    return ft, model, checkpoint['label_encoder']
 
 @st.cache_data
 def load_data():
@@ -90,38 +61,40 @@ def load_data():
         
         df_train = pd.read_excel(TRAIN_DATA_PATH)
         list_train = df_train['nomenclature'].unique().tolist()
+        
         return mapping_officiel, list_train
     except Exception as e:
-        st.error(f"Erreur fichiers Excel : {e}")
+        st.error(f"Erreur Excel : {e}")
         return {}, []
 
 # ============================================
-# 3. INTERFACE
+# 3. INTERFACE UTILISATEUR
 # ============================================
 st.set_page_config(page_title="ISCO Expert System", page_icon="💼", layout="wide")
 st.title("💼 Système Expert de Classification ISCO-08")
 
+# Chargement sécurisé
 ft_model, classifier, le = load_ai_models()
 isco_mapping, training_jobs = load_data()
 
-if isco_mapping and ft_model and classifier:
+if isco_mapping and ft_model:
     official_jobs = sorted([str(k) for k in isco_mapping.keys()])
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("📖 Référentiel Officiel")
-        selected_job = st.selectbox("Choisir un métier :", options=[""] + official_jobs)
+        selected_job = st.selectbox("Métier officiel :", options=[""] + official_jobs)
 
     with col2:
         st.subheader("🤖 Intelligence Artificielle")
-        free_text = st.text_input("Saisissez un libellé libre :")
+        free_text = st.text_input("Libellé libre :", placeholder="Ex: Développeur fullstack...")
 
     result_code = None
     source = ""
 
     if selected_job:
         result_code = isco_mapping[selected_job]
-        source = "Source : Référentiel Officiel"
+        source = "Source : Base officielle CITP-08"
     elif free_text:
         with torch.no_grad():
             vector = torch.FloatTensor(ft_model.get_sentence_vector(free_text.lower())).unsqueeze(0)
@@ -139,5 +112,3 @@ if isco_mapping and ft_model and classifier:
         st.markdown("---")
         st.metric("Code ISCO", result_code)
         st.caption(source)
-else:
-    st.warning("Chargement des composants en cours... Si cela prend plus de 5 minutes, vérifiez les fichiers sur GitHub.")
